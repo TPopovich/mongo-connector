@@ -167,7 +167,6 @@ class OplogThread(threading.Thread):
             err = False
             remove_inc = 0
             upsert_inc = 0
-            update_inc = 0
             try:
                 logging.debug("OplogThread: about to process new oplog "
                               "entries")
@@ -438,7 +437,7 @@ class OplogThread(threading.Thread):
                 database, coll = namespace.split('.', 1)
                 last_id = None
                 attempts = 0
-
+                sleep_sec = 1
                 # Loop to handle possible AutoReconnect
                 while attempts < 60:
                     target_coll = self.main_connection[database][coll]
@@ -467,7 +466,8 @@ class OplogThread(threading.Thread):
                         break
                     except pymongo.errors.AutoReconnect:
                         attempts += 1
-                        time.sleep(1)
+                        if  (attempts%10 == 0): sleep_sec <<= 1          ## maybe we want some exponential backoff ???
+                        time.sleep(sleep_sec)
 
         # Extra threads (if any) that assist with collection dumps
         dumping_threads = []

@@ -53,7 +53,9 @@ class TestOplogManager(unittest.TestCase):
             namespace_set=None,
             auth_key=None,
             auth_username=None,
-            repl_set='test-oplog-manager'
+            repl_set='test-oplog-manager',
+            namespace_set_to_skip=[],
+            db_to_skip=[]
         )
 
     def tearDown(self):

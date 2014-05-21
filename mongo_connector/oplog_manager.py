@@ -40,7 +40,9 @@ class OplogThread(threading.Thread):
                  doc_manager, oplog_progress_dict, namespace_set, auth_key,
                  auth_username, repl_set=None, collection_dump=True,
                  batch_size=DEFAULT_BATCH_SIZE, fields=None,
-                 dest_mapping={}):
+                 dest_mapping={},
+                 namespace_set_to_skip=[],
+                 db_to_skip=[]):   # additional db to skip, as we always skip "config" and "local"
         """Initialize the oplog thread.
         """
         super(OplogThread, self).__init__()
@@ -84,6 +86,14 @@ class OplogThread(threading.Thread):
 
         #The set of namespaces to process from the mongo cluster.
         self.namespace_set = namespace_set
+
+        #The set of namespaces to not process from the mongo cluster.
+        self.namespace_set_to_skip = namespace_set_to_skip
+
+
+        self.db_to_skip = set(db_to_skip) if db_to_skip else set([])
+        self.db_to_skip.add("config") # always skip "config" and "local"
+        self.db_to_skip.add("local")
 
         #The dict of source namespaces to destination namespaces
         self.dest_mapping = dest_mapping
@@ -329,17 +339,31 @@ class OplogThread(threading.Thread):
             try:
                 logging.debug("OplogThread: Getting the oplog cursor "
                               "in the while true loop for get_oplog_cursor")
-                if not self.namespace_set:
-                    cursor = self.oplog.find(
-                        {'ts': {'$gte': timestamp}},
-                        tailable=True, await_data=True
-                    )
-                else:
-                    cursor = self.oplog.find(
-                        {'ts': {'$gte': timestamp},
-                         'ns': {'$in': self.namespace_set}},
-                        tailable=True, await_data=True
-                    )
+                if not self.namespace_set_to_skip:
+                    if not self.namespace_set:
+                        cursor = self.oplog.find(
+                            {'ts': {'$gte': timestamp}},
+                            tailable=True, await_data=True
+                        )
+                    else:
+                        cursor = self.oplog.find(
+                            {'ts': {'$gte': timestamp},
+                             'ns': {'$in': self.namespace_set}},
+                            tailable=True, await_data=True
+                        )
+                else:  ## user wants to skip
+                    if not self.namespace_set:
+                        cursor = self.oplog.find(
+                            {'ts': {'$gte': timestamp},
+                             'ns': {'$nin': self.namespace_set_to_skip}},
+                            tailable=True, await_data=True
+                        )
+                    else:  # here user might have both ns must be in namespace_set and namespace_set_to_skip, just use namespace_set
+                        cursor = self.oplog.find(
+                            {'ts': {'$gte': timestamp},
+                             'ns': {'$in': self.namespace_set}},
+                            tailable=True, await_data=True
+                        )
                 # Applying 8 as the mask to the cursor enables OplogReplay
                 cursor.add_option(8)
                 logging.debug("OplogThread: Cursor created, getting a count.")
@@ -392,7 +416,7 @@ class OplogThread(threading.Thread):
         if not self.namespace_set:
             db_list = retry_until_ok(self.main_connection.database_names)
             for database in db_list:
-                if database == "config" or database == "local":
+                if database in self.db_to_skip: # skip "config" , "local" and any other db specified by user to skip
                     continue
                 coll_list = retry_until_ok(
                     self.main_connection[database].collection_names)

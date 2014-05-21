@@ -41,7 +41,10 @@ class Connector(threading.Thread):
                  u_key, auth_key, doc_manager=None, auth_username=None,
                  collection_dump=True, batch_size=constants.DEFAULT_BATCH_SIZE,
                  fields=None, dest_mapping={},
-                 auto_commit_interval=constants.DEFAULT_COMMIT_INTERVAL):
+                 auto_commit_interval=constants.DEFAULT_COMMIT_INTERVAL,
+                 ns_set_to_skip=[],
+                 db_to_skip=[]
+                 ):
 
         if target_url and not doc_manager:
             raise errors.ConnectorError("Cannot create a Connector with a "
@@ -96,6 +99,12 @@ class Connector(threading.Thread):
 
         #The set of relevant namespaces to consider
         self.ns_set = ns_set
+
+        #The set of namespaces to not process from the mongo cluster.
+        self.ns_set_to_skip = ns_set_to_skip
+
+        #The set of DBs to not process from the mongo cluster.
+        self.db_to_skip = db_to_skip
 
         #The dict of source namespace to destination namespace
         self.dest_mapping = dest_mapping
@@ -251,7 +260,7 @@ class Connector(threading.Thread):
 
         source.close()
 
-        count = 0
+
         oplog_dict = self.oplog_progress.get_dict()
         for count in range(0, len(data), 2):
             oplog_str = data[count]
@@ -307,7 +316,9 @@ class Connector(threading.Thread):
                 collection_dump=self.collection_dump,
                 batch_size=self.batch_size,
                 fields=self.fields,
-                dest_mapping=self.dest_mapping
+                dest_mapping=self.dest_mapping,
+                namespace_set_to_skip=self.ns_set_to_skip,
+                db_to_skip=self.db_to_skip
             )
             self.shard_set[0] = oplog
             logging.info('MongoConnector: Starting connection thread %s' %
@@ -372,7 +383,9 @@ class Connector(threading.Thread):
                         collection_dump=self.collection_dump,
                         batch_size=self.batch_size,
                         fields=self.fields,
-                        dest_mapping=self.dest_mapping
+                        dest_mapping=self.dest_mapping,
+                        namespace_set_to_skip=self.ns_set_to_skip,
+                        db_to_skip=self.db_to_skip
                     )
                     self.shard_set[shard_id] = oplog
                     msg = "Starting connection thread"
@@ -388,6 +401,14 @@ class Connector(threading.Thread):
         logging.info('MongoConnector: Stopping all OplogThreads')
         for thread in self.shard_set.values():
             thread.join()
+
+
+def _split_comma_sep_values_into_list(option_comma_sep_list):
+    if option_comma_sep_list is None:
+        set = []
+    else:
+        set = option_comma_sep_list.split(',')
+    return set
 
 
 def main():
@@ -473,6 +494,30 @@ def main():
                       """excluding the system and config databases, and """
                       """also ignoring the "system.indexes" collection in """
                       """any database.""")
+
+    #-n is to specify the namespaces we want to consider. The default
+    #considers all the namespaces
+    parser.add_option("-N", "--namespace-set-to-skip", action="store", type="string",
+                      dest="ns_set_to_skip", default=None, help=
+                      """Used to specify the namespaces we want to NOT"""
+                      """consider. For example, if we wished to store all """
+                      """documents skipping ones from the test.test and alpha.foo """
+                      """namespaces, we could use `-N test.test,alpha.foo`. """
+                      """The default is to consider all the namespaces, """
+                      """excluding just the system and config databases, and """
+                      """also ignoring the "system.indexes" collection in """
+                      """any database.""")
+
+    #-D is to specify the namespaces we want to consider. The default
+    #considers all the namespaces
+    parser.add_option("-D", "--db-set-to-skip", action="store", type="string",
+                      dest="db_to_skip", default=None, help=
+                      """Used to specify the DBs we want to NOT"""
+                      """consider. For example, if we wished to store all """
+                      """documents skipping ones from the DB test and private """
+                      """namespaces, we could use `-nskip test,private`. """
+                      """The default is to skip just system and config databases. """
+                      )
 
     #-u is to specify the mongoDB field that will serve as the unique key
     #for the target system,
@@ -582,7 +627,7 @@ def main():
                       """ interval, which should be preferred to this"""
                       """ option.""")
 
-    #-v enables vebose logging
+    #-v enables verbose logging
     parser.add_option("-v", "--verbose", action="store_true",
                       dest="verbose", default=False,
                       help="Sets verbose logging to be on.")
@@ -638,15 +683,20 @@ def main():
     if options.doc_managers is None:
         logger.info('No doc managers specified, using simulator.')
 
-    if options.ns_set is None:
-        ns_set = []
-    else:
-        ns_set = options.ns_set.split(',')
+    db_to_skip = _split_comma_sep_values_into_list(options.db_to_skip)
+
+    ns_set = _split_comma_sep_values_into_list(options.ns_set)
+    ns_set_to_skip = _split_comma_sep_values_into_list(options.ns_set_to_skip)
+    # validate args relating to namespaces, should not have  namespaces are set to both include and ignore
+    ns_to_both_include_and_ignore = set(ns_set).intersection( set(ns_set_to_skip))
+    if ns_to_both_include_and_ignore:
+        logging.fatal('These namespaces are set to both be included and ignored: %s', ns_to_both_include_and_ignore)
+        sys.exit(2)
 
     if options.dest_ns_set is None:
         dest_ns_set = ns_set
     else:
-        dest_ns_set = options.dest_ns_set.split(',')
+        dest_ns_set = _split_comma_sep_values_into_list(options.dest_ns_set)
 
     if len(dest_ns_set) != len(ns_set):
         logger.error("Destination namespace must be the same length as the "
@@ -696,7 +746,9 @@ def main():
         batch_size=options.batch_size,
         fields=fields,
         dest_mapping=dest_mapping,
-        auto_commit_interval=options.commit_interval
+        auto_commit_interval=options.commit_interval,         # e.g. constants.DEFAULT_COMMIT_INTERVAL
+        ns_set_to_skip=ns_set_to_skip,
+        db_to_skip=db_to_skip
     )
     connector.start()
 
